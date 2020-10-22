@@ -1,4 +1,3 @@
-import random
 import argparse
 
 import pandas as pd
@@ -28,28 +27,11 @@ from schedulers import get_scheduler
 from transforms import get_transform
 from losses import get_criterion
 
+from Config import config
+
 # from utils import *
 
-class config:
-    epochs = 10
-    batch_size = 4
-    regression = False
-    num_classes = 6 - 1
-    IMAGE_PATH = 'data/train/'
-    lr = 1e-4
-    # lr = 3e-4
-    N = 36
-    sz = 256
-    mean = [1.0-0.90949707, 1.0-0.8188697, 1.0-0.87795304],
-    std = [0.36357649, 0.49984502, 0.40477625],
-    seed = 69420
-    mixup = 0
-    cutmix = 0
-    accumulation_steps = 1
-    single_fold = 0
-    apex = True
-
-
+import random
 def seed_everything(seed):
     random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
@@ -59,8 +41,57 @@ def seed_everything(seed):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = True
 
+def evaluate_model(model, val_loader, criterion1, epoch, scheduler, history, log_name=None):
+    model.eval()
+    loss = 0.
+    
+    preds_1 = []
+    tars_1 = []
+    with torch.no_grad():
+        # t = tqdm(val_loader)
+        for img_batch, y_batch in val_loader:
+            img_batch = img_batch.cuda().float()
+            y_batch = y_batch.cuda().long()
+
+            o1 = model(img_batch)
+
+            l1  = criterion1(o1, y_batch)
+            loss += l1
+
+            for j in range(len(o1)):
+                preds_1.append(torch.argmax(F.softmax(o1[j]), -1))
+            for i in y_batch:
+                tars_1.append(i[0].data.cpu().numpy())
+    
+    preds_1 = [p.data.cpu().numpy() for p in preds_1]
+    preds_1 = np.array(preds_1).T.reshape(-1)
+
+    final_score =  sklearn.metrics.recall_score(
+        tars_1, preds_1, average='macro')
+    
+    loss /= len(val_loader)
+    
+    if history2 is not None:
+        history2.loc[epoch, 'val_loss'] = loss.cpu().numpy()
+        history2.loc[epoch, 'acc'] = final_score
+    
+    if scheduler is not None:
+        scheduler.step(final_score)
+
+    print('Dev loss: %.4f, Kaggle: %.4f' % (loss, final_score))
+    
+    with open(log_name, 'a') as f:
+        f.write('XXXXXXXXXXXXXX-- CYCLE INTER: %i --XXXXXXXXXXXXXXXXXXX\n'%(epoch+1))
+        f.write('val epoch: %i\n'%(epoch+1))
+        f.write('val loss: %.4f  val acc: %.4f\n'%(loss,acc))
+        f.write('val QWK: %.4f\n'%(final_score))
+        f.write('\n')
+
+    return preds_1, tars_1, loss, final_score
 
 def main():
+    if not os.path.isdir('data/lyft-scenes/'):
+        os.system('python download.py')
     seed_everything(config.seed)
 #     args = parse_args()
 
@@ -84,8 +115,7 @@ def main():
 
     folds = [0, 1, 2, 3, 4]
     
-    length = len(os.listdir('./logs/')) - 1
-    log_name = "./logs/log-%i.log"%(length)
+    log_name = f"../drive/My Drive/logs/log-{len(os.listdir('../drive/My Drive/logs/'))}.log"
 
     # Loop over folds
     for fld in range(1):
@@ -127,18 +157,6 @@ def main():
 
         # Scheduler
         scheduler = get_scheduler(optimizer, train_loader=train_loader, epochs=n_epochs, batch_size=config.batch_size)
-
-        # print('Loading previous training...')
-        # state = torch.load('model.pth')
-        # model.load_state_dict(state['model_state'])
-        # best = state['kaggle']
-        # best2 = state['loss']
-        # print(f'Loaded model with kaggle score: {best}, loss: {best2}')
-        # optimizer.load_state_dict(state['opt_state'])
-        # scheduler.load_state_dict(state['scheduler_state'])
-        # early_epoch = state['epoch'] + 1
-        # print(f'Beginning at epoch {early_epoch}')
-        # print('')
 
         for epoch in range(n_epochs-early_epoch):
             epoch += early_epoch
@@ -198,91 +216,26 @@ def main():
 
                 if scheduler is not None:
                     scheduler.step(epoch)
-            
-            # ###################################################################
-            # ############## VALIDATION #########################################
-            # ###################################################################
 
-            model.eval()
-            loss = 0
-            
-            preds_1 = []
-            tars_1 = []
-            with torch.no_grad():
-                # t = tqdm(val_loader)
-                for img_batch, y_batch in val_loader:
-                    img_batch = img_batch.cuda().float()
-                    y_batch = y_batch.cuda().long()
+            #### VALIDATION ####
 
-                    o1 = model(img_batch)
-
-                    l1  = criterion1(o1, y_batch)
-                    loss += l1
-
-                    for j in range(len(o1)):
-                        preds_1.append(torch.argmax(F.softmax(o1[j]), -1))
-                    for i in y_batch:
-                        tars_1.append(i[0].data.cpu().numpy())
+            pred, tars, loss, kaggle = evaluate_model(model, val_loader, criterion1, epoch, scheduler=scheduler, history=history2, log_name=log_name)
             
-            preds_1 = [p.data.cpu().numpy() for p in preds_1]
-            preds_1 = np.array(preds_1).T.reshape(-1)
-
-            final_score =  sklearn.metrics.recall_score(
-                tars_1, preds_1, average='macro')
-            
-            loss /= len(val_loader)
-            
-            if history2 is not None:
-                history2.loc[epoch, 'val_loss'] = loss.cpu().numpy()
-                history2.loc[epoch, 'acc'] = final_score
-            
-            if scheduler is not None:
-                scheduler.step(final_score)
-
-            print('Dev loss: %.4f, Kaggle: %.4f' % (loss, final_score))
-            
-            with open(log_name, 'a') as f:
-                f.write('XXXXXXXXXXXXXX-- CYCLE INTER: %i --XXXXXXXXXXXXXXXXXXX\n'%(epoch+1))
-                f.write('val epoch: %i\n'%(epoch+1))
-                f.write('val loss: %.4f  val acc: %.4f\n'%(loss,acc))
-                f.write('val QWK: %.4f\n'%(final_score))
-                f.write('\n')
-
-            if epoch > 0:
-                history2['acc'].plot()
-                plt.savefig('epoch%03d_%i_acc.png'%(epoch+1,fold))
-                plt.clf()
-            
-            if loss < best2:
-                best2 = loss
-                print('Saving best model... (loss)')
+            if kaggle > best:
+                best = kaggle
+                print(f'Saving best model... (metric)')
                 torch.save({
-                    'epoch': epoch,
-                    'loss': loss,
-                    'kaggle': final_score,
                     'model_state': model.state_dict(),
-                    'opt_state': optimizer.state_dict(),
-                    'scheduler_state': scheduler.state_dict()
-                }, 'model-1_%i.pth'%(fold))
-            
-            if final_score > best:
-                best = final_score
-                print('Saving best model... (acc)')
-                torch.save({
-                    'epoch': epoch,
-                    'loss': loss,
-                    'kaggle': final_score,
-                    'model_state': model.state_dict(),
-                    'opt_state': optimizer.state_dict(),
-                    'scheduler_state': scheduler.state_dict()
-                }, 'model_%i.pth'%(fold))
-
-# def parse_args():
-#     parser = argparse.ArgumentParser()
-#     parser.add_argument('--epochs', default=100, type=int)
-    # parser.add_argument('--batch_size', default=128, type=int)
-    # parser.add_argument('--checkpoint' default=None, stye=str)
-#     return parser.parse_args()
+                }, f'../drive/My Drive/Models/model1-fld{fold+1}.pth')
+                with open(log_name, 'a') as f:
+                    f.write('Saving Best model...\n\n')
+            else:
+                with open(log_name, 'a') as f:
+                    f.write('\n')
+        
+        model = create_model('resnet18', path=f'../drive/My Drive/Models/model1-fld{fold+1}.pth')
+        model.cuda()
+        pred, tars, loss, kaggle = evaluate_model(model, val_loader, criterion1, 0, scheduler=scheduler, history=history2, log_name=log_name)
 
 if __name__ == '__main__':
     main()
