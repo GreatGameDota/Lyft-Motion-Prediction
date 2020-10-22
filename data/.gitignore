@@ -1,2 +1,7 @@
 train/*
 *.csv
+*.zarr
+*.npz
+*.json
+aerial_map/*
+semantic_map/*

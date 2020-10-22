@@ -1,21 +1,33 @@
 import argparse
-
+import gc
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import cv2
 import os
+import re
+import glob
+import math
 from tqdm import tqdm,trange
-from sklearn.model_selection import train_test_split
-import sklearn.metrics
-import gc
+from pathlib import Path
 import albumentations as A
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.cuda import amp
+from torch.utils.data import Dataset, DataLoader
+from torch.utils.data.dataset import Subset
 
-from apex import amp
+from torch import nn, optim
+from typing import Dict
+
+from l5kit.data import LocalDataManager, ChunkedDataset
+from l5kit.dataset import AgentDataset, EgoDataset
+from l5kit.rasterization import build_rasterizer
+from l5kit.evaluation.metrics import neg_multi_log_likelihood, time_displace
+from l5kit.evaluation import create_chopped_dataset, write_pred_csv, compute_metrics_csv, read_gt_csv
+from l5kit.geometry import transform_points
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -24,12 +36,12 @@ from dataloader import get_loader
 from models import load_model
 from optimizers import get_optimizer
 from schedulers import get_scheduler
-from transforms import get_transform
-from losses import get_criterion
+from transform import get_transform
+from loss import get_criterion
 
-from Config import config
+from Config import config, cfg
 
-# from utils import *
+from utilities import *
 
 import random
 def seed_everything(seed):
@@ -41,79 +53,154 @@ def seed_everything(seed):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = True
 
-def evaluate_model(model, val_loader, criterion1, epoch, scheduler, history, log_name=None):
+def evaluate_model(model, val_loader, criterion1, epoch, eval_gt_path, scheduler, history, log_name=None):
     model.eval()
     loss = 0.
+    metric_ = 0.
     
     preds_1 = []
+    confids = []
     tars_1 = []
+    ids, times = [], []
     with torch.no_grad():
-        # t = tqdm(val_loader)
-        for img_batch, y_batch in val_loader:
+        t = tqdm(val_loader)
+        for img_batch, targets, y_avail, matrix, centroid, agent_ids, timestamps, world_from_agents in t:
             img_batch = img_batch.cuda().float()
-            y_batch = y_batch.cuda().long()
+            targets = targets.cuda().float()
+            y_avail = y_avail.cuda().float()
+            matrix = matrix.cuda().float()
+            centroid = centroid[:,None,:].cuda().float()
+            agent_ids = agent_ids.cuda()
+            timestamps = timestamps.cuda()
+            world_from_agents = world_from_agents.cuda().float()
 
-            o1 = model(img_batch)
+            bs,tl,_ = targets.shape
+            assert tl == cfg["model_params"]["future_num_frames"]
 
-            l1  = criterion1(o1, y_batch)
+            pred, confid = model(img_batch)
+
+            # print(y_batch, pred)
+            l1 = criterion1(targets, pred, confid, y_avail)
             loss += l1
 
-            for j in range(len(o1)):
-                preds_1.append(torch.argmax(F.softmax(o1[j]), -1))
-            for i in y_batch:
-                tars_1.append(i[0].data.cpu().numpy())
-    
-    preds_1 = [p.data.cpu().numpy() for p in preds_1]
-    preds_1 = np.array(preds_1).T.reshape(-1)
+            for idx in range(len(pred)):
+              for mode in range(3):
+                  pred[idx, mode, :, :] = transform_points(pred[idx, mode, :, :], world_from_agents[idx]) - centroid[idx][:2]
+            # metric_ += metric(o1, y_batch)
 
-    final_score =  sklearn.metrics.recall_score(
-        tars_1, preds_1, average='macro')
+            for j in range(len(pred)):
+              preds_1.append(pred[j].data.cpu().numpy())
+              confids.append(confid[j].data.cpu().numpy())
+              ids.append(agent_ids[j].data.cpu().numpy())
+              times.append(timestamps[j].data.cpu().numpy())
+            for i in targets:
+              tars_1.append(i.data.cpu().numpy())
     
-    loss /= len(val_loader)
+    # preds_1 = np.array(preds_1)
+    pred_path = f"/content/Lyft-Motion-Prediction/pred.csv"
+    # print(np.array(times))
+    write_pred_csv(pred_path,
+               timestamps=np.array(times),
+               track_ids=np.array(ids),
+               coords=np.array(preds_1),
+               confs=np.array(confids)
+    )
     
-    if history2 is not None:
-        history2.loc[epoch, 'val_loss'] = loss.cpu().numpy()
-        history2.loc[epoch, 'acc'] = final_score
+    gt = pd.read_csv('data/validate_chopped_100/gt2.csv')
+    gt = gt.loc[:len(preds_1)-1]
+    gt.to_csv('data/validate_chopped_100/gt.csv', index=False)
+
+    metrics = compute_metrics_csv(eval_gt_path, pred_path, [neg_multi_log_likelihood, time_displace])
+    for metric_name, metric_mean in metrics.items():
+        print(metric_name, metric_mean)
+    final_score = metrics['neg_multi_log_likelihood']
+    
+    loss = final_score
+    
+    if history is not None:
+      history.loc[epoch, 'val_loss'] = loss
+      # history.loc[epoch, 'metric'] = final_score
     
     if scheduler is not None:
-        scheduler.step(final_score)
+      scheduler.step(loss)
 
-    print('Dev loss: %.4f, Kaggle: %.4f' % (loss, final_score))
+    # print(f'Dev loss: %.4f, Metric: {final_score}, Metric2: {final_score2}'%(loss))
+    # print(f'Dev loss: %.4f, Metric: {final_score}'%(loss))
     
     with open(log_name, 'a') as f:
-        f.write('XXXXXXXXXXXXXX-- CYCLE INTER: %i --XXXXXXXXXXXXXXXXXXX\n'%(epoch+1))
-        f.write('val epoch: %i\n'%(epoch+1))
-        f.write('val loss: %.4f  val acc: %.4f\n'%(loss,acc))
-        f.write('val QWK: %.4f\n'%(final_score))
-        f.write('\n')
+      f.write(f'val loss: {loss}\n')
+      # f.write(f'val Metric: {final_score}\n')
 
-    return preds_1, tars_1, loss, final_score
+    return preds_1, tars_1, loss, ids, times
 
 def main():
-    if not os.path.isdir('data/lyft-scenes/'):
+    if not os.path.isdir('data/aerial_map/'):
         os.system('python download.py')
     seed_everything(config.seed)
 #     args = parse_args()
 
-    train_df = pd.read_csv('data/train_with_folds.csv')
+    INPUT_DIR = '/content/Lyft-Motion-Prediction/data/'
+    os.environ["L5KIT_DATA_FOLDER"] = INPUT_DIR
+    dm = LocalDataManager(None)
+
+    if not os.path.isfile('data/validate_chopped_100/gt2.csv'):
+        os.system("cp 'data/validate_chopped_100/gt.csv' 'data/validate_chopped_100/gt2.csv'")
+
+    ###########################################
+    ############## LOAD DATA ##################
+    ###########################################
+
+    train_cfg = cfg['train_data_loader']
+
+    # Rasterizer
+    rasterizer = build_rasterizer(cfg, dm)
+
+    # Train dataset/dataloader
+    train_zarr = ChunkedDataset(dm.require(train_cfg["key"])).open()
+    train_dataset = AgentDataset(cfg, train_zarr, rasterizer)
+    train_dataloader = DataLoader(train_dataset,
+                                shuffle=train_cfg["shuffle"],
+                                batch_size=train_cfg["batch_size"],
+                                num_workers=train_cfg["num_workers"])
+
+    print(train_dataset)
+    gc.collect()
+
+    num_frames_to_chop = 100
+    MIN_FUTURE_STEPS = 10
+    eval_cfg = cfg['val_data_loader']
+
+    if not os.path.isdir('/content/Lyft-Motion-Prediction/data/validate_chopped_100/'):
+        eval_base_path = create_chopped_dataset(dm.require(eval_cfg['key']), cfg["raster_params"]["filter_agents_threshold"], 
+                                        num_frames_to_chop, cfg["model_params"]["future_num_frames"], MIN_FUTURE_STEPS)
+    else:
+        eval_base_path = '/content/Lyft-Motion-Prediction/data/validate_chopped_100/'
+
+    eval_zarr_path = str(Path(eval_base_path) / Path(dm.require(eval_cfg["key"])).name)
+    eval_mask_path = str(Path(eval_base_path) / "mask.npz")
+    eval_gt_path = str(Path(eval_base_path) / "gt.csv")
+
+    eval_zarr = ChunkedDataset(eval_zarr_path).open()
+    eval_mask = np.load(eval_mask_path)["arr_0"]
+    # ===== INIT DATASET AND LOAD MASK
+    eval_dataset = AgentDataset(cfg, eval_zarr, rasterizer, agents_mask=eval_mask)
+
+    eval_dataloader = DataLoader(eval_dataset, shuffle=eval_cfg["shuffle"], batch_size=eval_cfg["batch_size"], 
+                                num_workers=eval_cfg["num_workers"])
+    print(eval_dataset)
+
+    ###############################
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(device)
 
     # Data Loaders
-    # df_train, df_val = train_test_split(train_df, test_size=0.2, random_state=2021)
 
-    # train_transform = get_transform(128)
     train_transform = A.Compose([
-                                A.CoarseDropout(max_holes=1, max_width=64, max_height=64, p=0.9),
-                                A.ShiftScaleRotate(rotate_limit=5, p=0.9),
-                                A.Normalize(mean=config.mean, std=config.std, always_apply=True)
     ])
     val_transform = A.Compose([
-                            A.Normalize(mean=config.mean, std=config.std, always_apply=True)
+                            # A.Normalize(mean=config.mean, std=config.std, always_apply=True)
     ])
-
-    folds = [0, 1, 2, 3, 4]
     
     log_name = f"../drive/My Drive/logs/log-{len(os.listdir('../drive/My Drive/logs/'))}.log"
 
@@ -124,12 +211,13 @@ def main():
         with open(log_name, 'a') as f:
             f.write('Train Fold %i\n\n'%(fold+1))
 
-        train_loader = get_loader(train_df, config.IMAGE_PATH, folds=[
-                                  i for i in folds if i != fold], batch_size=config.batch_size, workers=4, shuffle=True, transform=train_transform)
-        val_loader = get_loader(train_df, config.IMAGE_PATH, folds=[fold], batch_size=config.batch_size, workers=4, shuffle=False, transform=val_transform)
+        train_loader = get_loader(train_dataset, batch_size=config.batch_size, workers=4, shuffle=True, transform=train_transform)
+        val_loader = get_loader(eval_dataset, batch_size=config.batch_size, workers=4, shuffle=False, transform=val_transform, mode='val')
+    
+        scaler = amp.GradScaler()
 
         # Build Model
-        model = load_model('seresnext50_32x4d', pretrained=True)
+        model = load_model('resnet18')
         model = model.cuda()
 
         # Optimizer
@@ -171,58 +259,65 @@ def main():
             total_loss = 0
             
             t = tqdm(train_loader)
-            for batch_idx, (img_batch, y_batch) in enumerate(t):
+            for batch_idx, (img_batch, targets, y_avail, matrix, centroid) in enumerate(t):
                 img_batch = img_batch.cuda().float()
-                y_batch = y_batch.cuda().long()
+                targets = targets.cuda().float()
+                y_avail = y_avail.cuda().float()
+                matrix = matrix.cuda().float()
+                centroid = centroid[:,None,:].cuda().float()
                 
-                # optimizer.zero_grad()
+                bs,tl,_ = targets.shape
+                assert tl == cfg["model_params"]["future_num_frames"]
                 
-                rand = np.random.rand()
-                if rand < config.mixup:
-                    pass
-                    # images, targets = mixup(img_batch, y_batch, 0.4)
-                    # output1 = model(images)
-                    # l1 = mixup_criterion(output1, targets)
-                elif rand < config.cutmix:
-                    pass
-                    # images, targets = cutmix(img_batch, y_batch, 0.4)
-                    # output1 = model(images)
-                    # l1 = cutmix_criterion(output1, targets)
-                else:
-                    output1 = model(img_batch)
-                    loss = criterion1(output1, y_batch) / config.accumulation_steps
-
-                total_loss += loss.data.cpu().numpy() * config.accumulation_steps
-                t.set_description('Epoch %i/%i, LR: %6f, Loss: %.4f' % (epoch+1,n_epochs,
-                    optimizer.state_dict()['param_groups'][0]['lr'], total_loss/(batch_idx+1)))
-
-                if history is not None:
-                    history.loc[epoch + batch_idx / len(train_loader), 'train_loss'] = loss.data.cpu().numpy()
-                    history.loc[epoch + batch_idx / len(train_loader), 'lr'] = optimizer.state_dict()['param_groups'][0]['lr']
+                try:
+                    rand = np.random.rand()
+                    if rand < config.mixup:
+                        pass
+                    elif rand < config.cutmix:
+                        pass
+                    else:
+                        if config.scale:
+                            with amp.autocast():
+                                pred, confid = model(img_batch)
+                                loss = criterion1(targets, pred, confid, y_avail) / config.accumulation_steps
+                        else:
+                            pred, confid = model(img_batch)
+                            loss = criterion1(targets, pred, confid, y_avail) / config.accumulation_steps
                     
-                # scaler.scale(loss).backward()
-                # loss.backward()
-                if config.apex:
-                    with amp.scale_loss(loss, optimizer) as scaled_loss:
-                        scaled_loss.backward()
-                else:
-                    loss.backward()
-                
-                if (batch_idx+1) % config.accumulation_steps == 0:
-                    # scaler.step(optimizer)
-                    optimizer.step()
-                    # scaler.update()
-                    optimizer.zero_grad()
+                    total_loss += loss.data.cpu().numpy() * config.accumulation_steps
+                    t.set_description(f'Epoch {epoch+1}/{n_epochs}, LR: %6f, Loss: %.4f'%(optimizer.state_dict()['param_groups'][0]['lr'],total_loss/(batch_idx+1)))
 
-                if scheduler is not None:
-                    scheduler.step(epoch)
+                    if history is not None:
+                        history.loc[epoch + batch_idx / len(train_loader), 'train_loss'] = loss.data.cpu().numpy()
+                        history.loc[epoch + batch_idx / len(train_loader), 'lr'] = optimizer.state_dict()['param_groups'][0]['lr']
+                    
+                    if config.scale:
+                        scaler.scale(loss).backward()
+                    elif config.apex:
+                        with amp.scale_loss(loss, optimizer) as scaled_loss:
+                            scaled_loss.backward()
+                    else:
+                        loss.backward()
+                    
+                    if (batch_idx+1) % config.accumulation_steps == 0:
+                        if config.scale:
+                            scaler.step(optimizer)
+                            scaler.update()
+                        else:
+                            optimizer.step()
+                            optimizer.zero_grad()
+                    
+                    # if scheduler is not None:
+                    #    scheduler.step(epoch)
+                except AssertionError as e:
+                    print(e)
 
             #### VALIDATION ####
 
-            pred, tars, loss, kaggle = evaluate_model(model, val_loader, criterion1, epoch, scheduler=scheduler, history=history2, log_name=log_name)
+            pred, tars, loss, ids, times = evaluate_model(model, val_loader, criterion1, epoch, eval_gt_path, scheduler=scheduler, history=history2, log_name=log_name)
             
-            if kaggle > best:
-                best = kaggle
+            if loss < best2:
+                best2 = loss
                 print(f'Saving best model... (metric)')
                 torch.save({
                     'model_state': model.state_dict(),
