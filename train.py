@@ -97,7 +97,7 @@ def evaluate_model(model, val_loader, criterion1, epoch, eval_gt_path, scheduler
               tars_1.append(i.data.cpu().numpy())
     
     # preds_1 = np.array(preds_1)
-    pred_path = f"/content/Lyft-Motion-Prediction/pred.csv"
+    pred_path = f"pred.csv"
     # print(np.array(times))
     write_pred_csv(pred_path,
                timestamps=np.array(times),
@@ -139,12 +139,12 @@ def main():
     seed_everything(config.seed)
 #     args = parse_args()
 
-    INPUT_DIR = '/content/Lyft-Motion-Prediction/data/'
+    INPUT_DIR = './'
     os.environ["L5KIT_DATA_FOLDER"] = INPUT_DIR
     dm = LocalDataManager(None)
 
-    if not os.path.isfile('data/validate_chopped_100/gt2.csv'):
-        os.system("cp 'data/validate_chopped_100/gt.csv' 'data/validate_chopped_100/gt2.csv'")
+    # if not os.path.isfile('data/validate_chopped_100/gt2.csv'):
+        # os.system("cp 'data/validate_chopped_100/gt.csv' 'data/validate_chopped_100/gt2.csv'")
 
     ###########################################
     ############## LOAD DATA ##################
@@ -170,11 +170,11 @@ def main():
     MIN_FUTURE_STEPS = 10
     eval_cfg = cfg['val_data_loader']
 
-    if not os.path.isdir('/content/Lyft-Motion-Prediction/data/validate_chopped_100/'):
+    if not os.path.isdir('data/validate_chopped_100/'):
         eval_base_path = create_chopped_dataset(dm.require(eval_cfg['key']), cfg["raster_params"]["filter_agents_threshold"], 
                                         num_frames_to_chop, cfg["model_params"]["future_num_frames"], MIN_FUTURE_STEPS)
     else:
-        eval_base_path = '/content/Lyft-Motion-Prediction/data/validate_chopped_100/'
+        eval_base_path = 'data/validate_chopped_100/'
 
     eval_zarr_path = str(Path(eval_base_path) / Path(dm.require(eval_cfg["key"])).name)
     eval_mask_path = str(Path(eval_base_path) / "mask.npz")
@@ -202,7 +202,7 @@ def main():
                             # A.Normalize(mean=config.mean, std=config.std, always_apply=True)
     ])
     
-    log_name = f"../drive/My Drive/logs/log-{len(os.listdir('../drive/My Drive/logs/'))}.log"
+    log_name = f"./logs/log-{len(os.listdir('./logs/'))}.log"
 
     # Loop over folds
     for fld in range(1):
@@ -211,8 +211,8 @@ def main():
         with open(log_name, 'a') as f:
             f.write('Train Fold %i\n\n'%(fold+1))
 
-        train_loader = get_loader(train_dataset, batch_size=config.batch_size, workers=4, shuffle=True, transform=train_transform)
-        val_loader = get_loader(eval_dataset, batch_size=config.batch_size, workers=4, shuffle=False, transform=val_transform, mode='val')
+        train_loader = get_loader(train_dataset, batch_size=config.batch_size, workers=0, shuffle=True, transform=train_transform)
+        val_loader = get_loader(eval_dataset, batch_size=config.batch_size, workers=0, shuffle=False, transform=val_transform, mode='val')
     
         scaler = amp.GradScaler()
 
@@ -321,14 +321,14 @@ def main():
                 print(f'Saving best model... (metric)')
                 torch.save({
                     'model_state': model.state_dict(),
-                }, f'../drive/My Drive/Models/model1-fld{fold+1}.pth')
+                }, f'model1-fld{fold+1}.pth')
                 with open(log_name, 'a') as f:
                     f.write('Saving Best model...\n\n')
             else:
                 with open(log_name, 'a') as f:
                     f.write('\n')
         
-        model = create_model('resnet18', path=f'../drive/My Drive/Models/model1-fld{fold+1}.pth')
+        model = create_model('resnet18', path=f'model1-fld{fold+1}.pth')
         model.cuda()
         pred, tars, loss, kaggle = evaluate_model(model, val_loader, criterion1, 0, scheduler=scheduler, history=history2, log_name=log_name)
 

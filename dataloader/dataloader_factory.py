@@ -17,12 +17,12 @@ class ImageDataset(Dataset):
 
     def __len__(self):
         if self.mode == 'train':
-          # return int(len(self.dataset) * .001)
+          return int(len(self.dataset) * .001)
           # return 5000
-          return 100
+          # return 100
         else:
-          return 100
-          # return 10000
+          # return 100
+          return 10000
         # return len(self.dataset)
     
     def __getitem__(self, idx):

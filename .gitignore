@@ -5,3 +5,4 @@ apex/
 *.sh
 .colab_ssh
 *.csv
+/.kaggle/

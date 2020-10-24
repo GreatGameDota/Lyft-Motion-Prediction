@@ -33,21 +33,21 @@ cfg = {
         'pixel_size': [0.5, 0.5],
         'ego_center': [0.25, 0.5],
         'map_type': 'py_semantic',
-        'satellite_map_key': '/content/Lyft-Motion-Prediction/data/aerial_map/aerial_map.png',
-        'semantic_map_key': '/content/Lyft-Motion-Prediction/data/semantic_map/semantic_map.pb',
-        'dataset_meta_key': '/content/Lyft-Motion-Prediction/data/meta.json',
+        'satellite_map_key': 'data/aerial_map/aerial_map.png',
+        'semantic_map_key': 'data/semantic_map/semantic_map.pb',
+        'dataset_meta_key': 'data/meta.json',
         'filter_agents_threshold': 0.5
     },
 
     'train_data_loader': {
-        'key': '/content/Lyft-Motion-Prediction/data/train.zarr',
+        'key': 'data/train.zarr',
         'batch_size': 64,
         'shuffle': True,
         'num_workers': 0
     },
 
     'val_data_loader': {
-        'key': '/content/Lyft-Motion-Prediction/data/validate.zarr',
+        'key': 'data/validate.zarr',
         'batch_size': 64,
         'shuffle': False,
         'num_workers': 0
