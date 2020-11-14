@@ -16,7 +16,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.cuda import amp
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, SubsetRandomSampler, Subset
 from torch.utils.data.dataset import Subset
 
 from torch import nn, optim
@@ -50,8 +50,8 @@ def seed_everything(seed):
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = True
+    # torch.backends.cudnn.deterministic = True
+    # torch.backends.cudnn.benchmark = True
 
 def evaluate_model(model, val_loader, criterion1, epoch, eval_gt_path, scheduler, history, log_name=None):
     model.eval()
@@ -64,15 +64,24 @@ def evaluate_model(model, val_loader, criterion1, epoch, eval_gt_path, scheduler
     ids, times = [], []
     with torch.no_grad():
         t = tqdm(val_loader)
-        for img_batch, targets, y_avail, matrix, centroid, agent_ids, timestamps, world_from_agents in t:
-            img_batch = img_batch.cuda().float()
-            targets = targets.cuda().float()
-            y_avail = y_avail.cuda().float()
-            matrix = matrix.cuda().float()
-            centroid = centroid[:,None,:].cuda().float()
-            agent_ids = agent_ids.cuda()
-            timestamps = timestamps.cuda()
-            world_from_agents = world_from_agents.cuda().float()
+        for batch in t:
+        # for img_batch, targets, y_avail, matrix, centroid, agent_ids, timestamps, world_from_agents in t:
+        # tr_it = iter(val_loader)
+        # t = trange(math.ceil(cfg['val_params']['steps'] / cfg["val_data_loader"]["batch_size"]))
+        # for batch_idx in t:
+        #     try:
+        #         batch = next(tr_it)
+        #     except StopIteration:
+        #         tr_it = iter(val_loader)
+        #         batch = next(tr_it)
+            img_batch = batch['image'].cuda().float()
+            y_avail = batch["target_availabilities"].cuda().float()
+            targets = batch['target_positions'].cuda().float()
+            matrix = batch["world_to_image"].cuda().float()
+            centroid = batch["centroid"][:,None,:].cuda().float()
+            agent_ids = batch["track_id"].cuda()
+            timestamps = batch["timestamp"].cuda()
+            world_from_agents = batch["world_from_agent"].cuda().float()
 
             bs,tl,_ = targets.shape
             assert tl == cfg["model_params"]["future_num_frames"]
@@ -152,19 +161,28 @@ def main():
 
     train_cfg = cfg['train_data_loader']
 
-    # Rasterizer
-    rasterizer = build_rasterizer(cfg, dm)
+    # # Rasterizer
+    # rasterizer = build_rasterizer(cfg, dm)
 
-    # Train dataset/dataloader
-    train_zarr = ChunkedDataset(dm.require(train_cfg["key"])).open()
-    train_dataset = AgentDataset(cfg, train_zarr, rasterizer)
-    train_dataloader = DataLoader(train_dataset,
-                                shuffle=train_cfg["shuffle"],
-                                batch_size=train_cfg["batch_size"],
-                                num_workers=train_cfg["num_workers"])
+    # # Train dataset/dataloader
+    # train_zarr = ChunkedDataset(dm.require(train_cfg["key"])).open(cached=False)
+    # train_dataset = AgentDataset(cfg, train_zarr, rasterizer)
+    # # train_dataloader = DataLoader(train_dataset,
+    # #                             shuffle=train_cfg["shuffle"],
+    # #                             batch_size=train_cfg["batch_size"],
+    # #                             num_workers=train_cfg["num_workers"])
 
-    print(train_dataset)
-    gc.collect()
+    # print(len(train_dataset))
+    # gc.collect()
+
+    # idxs = np.arange(len(train_dataset))
+    # np.random.shuffle(idxs)
+    # sampler = SubsetRandomSampler( idxs[:int(len(train_dataset) * .005)] )
+    # train_loader = DataLoader(train_dataset,
+    #                             shuffle=False,
+    #                             batch_size=train_cfg["batch_size"],
+    #                             num_workers=train_cfg["num_workers"],
+    #                             sampler=sampler)
 
     num_frames_to_chop = 100
     MIN_FUTURE_STEPS = 10
@@ -180,14 +198,20 @@ def main():
     eval_mask_path = str(Path(eval_base_path) / "mask.npz")
     eval_gt_path = str(Path(eval_base_path) / "gt.csv")
 
-    eval_zarr = ChunkedDataset(eval_zarr_path).open()
-    eval_mask = np.load(eval_mask_path)["arr_0"]
-    # ===== INIT DATASET AND LOAD MASK
-    eval_dataset = AgentDataset(cfg, eval_zarr, rasterizer, agents_mask=eval_mask)
+    # eval_zarr = ChunkedDataset(eval_zarr_path).open(cached=False)
+    # eval_mask = np.load(eval_mask_path)["arr_0"]
+    # # ===== INIT DATASET AND LOAD MASK
+    # eval_dataset = AgentDataset(cfg, eval_zarr, rasterizer, agents_mask=eval_mask)
 
-    eval_dataloader = DataLoader(eval_dataset, shuffle=eval_cfg["shuffle"], batch_size=eval_cfg["batch_size"], 
-                                num_workers=eval_cfg["num_workers"])
-    print(eval_dataset)
+    # # eval_dataloader = DataLoader(eval_dataset, shuffle=eval_cfg["shuffle"], batch_size=eval_cfg["batch_size"], 
+    # #                             num_workers=eval_cfg["num_workers"])
+    # print(len(eval_dataset))
+    # gc.collect()
+    
+    # idxs = np.arange(len(eval_dataset))
+    # eval_dataset = Subset( eval_dataset, idxs[:cfg['val_params']['steps']] )
+    # val_loader = DataLoader(eval_dataset, shuffle=False, batch_size=eval_cfg["batch_size"], 
+    #                             num_workers=eval_cfg["num_workers"], sampler=None)
 
     ###############################
 
@@ -210,14 +234,18 @@ def main():
         print('Train fold: %i'%(fold+1))
         with open(log_name, 'a') as f:
             f.write('Train Fold %i\n\n'%(fold+1))
-
-        train_loader = get_loader(train_dataset, batch_size=config.batch_size, workers=0, shuffle=True, transform=train_transform)
-        val_loader = get_loader(eval_dataset, batch_size=config.batch_size, workers=0, shuffle=False, transform=val_transform, mode='val')
+        
+        # train_loader = get_loader(train_dataset, batch_size=config.batch_size, workers=0, shuffle=True, transform=None)
+        # val_loader = get_loader(eval_dataset, batch_size=config.batch_size, workers=0, shuffle=False, transform=None, mode='val')
     
+        train_loader = get_loader(None, dm, batch_size=train_cfg['batch_size'], workers=train_cfg['num_workers'], shuffle=train_cfg['shuffle'], transform=None)
+        val_loader = get_loader(None, dm, batch_size=eval_cfg['batch_size'], workers=eval_cfg['num_workers'], shuffle=eval_cfg['shuffle'], transform=None, mode='val')
+
         scaler = amp.GradScaler()
 
         # Build Model
         model = load_model('resnet18')
+        # model = load_model('resnet18', path='model1-fld1.pth')
         model = model.cuda()
 
         # Optimizer
@@ -244,7 +272,7 @@ def main():
         early_epoch = 0
 
         # Scheduler
-        scheduler = get_scheduler(optimizer, train_loader=train_loader, epochs=n_epochs, batch_size=config.batch_size)
+        scheduler = get_scheduler(optimizer, train_loader=train_loader, epochs=n_epochs, batch_size=train_cfg['batch_size'])
 
         for epoch in range(n_epochs-early_epoch):
             epoch += early_epoch
@@ -259,62 +287,77 @@ def main():
             total_loss = 0
             
             t = tqdm(train_loader)
-            for batch_idx, (img_batch, targets, y_avail, matrix, centroid) in enumerate(t):
-                img_batch = img_batch.cuda().float()
-                targets = targets.cuda().float()
-                y_avail = y_avail.cuda().float()
-                matrix = matrix.cuda().float()
-                centroid = centroid[:,None,:].cuda().float()
+            for batch_idx, batch in enumerate(t):
+            # for batch_idx, (img_batch, targets, y_avail, matrix, centroid) in enumerate(t):
+            #     img_batch = img_batch.cuda().float()
+            #     targets = targets.cuda().float()
+            #     y_avail = y_avail.cuda().float()
+            #     matrix = matrix.cuda().float()
+            #     centroid = centroid[:,None,:].cuda().float()
+            # for batch_idx, batch in enumerate(t):
+            # tr_it = iter(train_loader)
+            # t = trange(int(len(train_dataset) * .005) // train_cfg["batch_size"])
+            # for batch_idx in t:
+            #     try:
+            #         batch = next(tr_it)
+            #     except StopIteration:
+            #         tr_it = iter(train_loader)
+            #         batch = next(tr_it)
+                img_batch = batch['image'].cuda().float()
+                y_avail = batch["target_availabilities"].cuda().float()
+                targets = batch['target_positions'].cuda().float()
+                matrix = batch["world_to_image"].cuda().float()
+                centroid = batch["centroid"][:,None,:].cuda().float()
                 
                 bs,tl,_ = targets.shape
                 assert tl == cfg["model_params"]["future_num_frames"]
                 
-                try:
-                    rand = np.random.rand()
-                    if rand < config.mixup:
-                        pass
-                    elif rand < config.cutmix:
-                        pass
-                    else:
-                        if config.scale:
-                            with amp.autocast():
-                                pred, confid = model(img_batch)
-                                loss = criterion1(targets, pred, confid, y_avail) / config.accumulation_steps
-                        else:
+                # try:
+                rand = np.random.rand()
+                if rand < config.mixup:
+                    pass
+                elif rand < config.cutmix:
+                    pass
+                else:
+                    if config.scale:
+                        with amp.autocast():
                             pred, confid = model(img_batch)
                             loss = criterion1(targets, pred, confid, y_avail) / config.accumulation_steps
-                    
-                    total_loss += loss.data.cpu().numpy() * config.accumulation_steps
-                    t.set_description(f'Epoch {epoch+1}/{n_epochs}, LR: %6f, Loss: %.4f'%(optimizer.state_dict()['param_groups'][0]['lr'],total_loss/(batch_idx+1)))
-
-                    if history is not None:
-                        history.loc[epoch + batch_idx / len(train_loader), 'train_loss'] = loss.data.cpu().numpy()
-                        history.loc[epoch + batch_idx / len(train_loader), 'lr'] = optimizer.state_dict()['param_groups'][0]['lr']
-                    
-                    if config.scale:
-                        scaler.scale(loss).backward()
-                    elif config.apex:
-                        with amp.scale_loss(loss, optimizer) as scaled_loss:
-                            scaled_loss.backward()
                     else:
-                        loss.backward()
-                    
-                    if (batch_idx+1) % config.accumulation_steps == 0:
-                        if config.scale:
-                            scaler.step(optimizer)
-                            scaler.update()
-                        else:
-                            optimizer.step()
-                            optimizer.zero_grad()
-                    
-                    # if scheduler is not None:
-                    #    scheduler.step(epoch)
-                except AssertionError as e:
-                    print(e)
+                        pred, confid = model(img_batch)
+                        loss = criterion1(targets, pred, confid, y_avail) / config.accumulation_steps
+                
+                total_loss += loss.data.cpu().numpy() * config.accumulation_steps
+                t.set_description(f'Epoch {epoch+1}/{n_epochs}, LR: %6f, Loss: %.4f'%(optimizer.state_dict()['param_groups'][0]['lr'],total_loss/(batch_idx+1)))
 
-            #### VALIDATION ####
+                if history is not None:
+                    history.loc[epoch + batch_idx / len(train_loader), 'train_loss'] = loss.data.cpu().numpy()
+                    history.loc[epoch + batch_idx / len(train_loader), 'lr'] = optimizer.state_dict()['param_groups'][0]['lr']
+                
+                if config.scale:
+                    scaler.scale(loss).backward()
+                elif config.apex:
+                    with amp.scale_loss(loss, optimizer) as scaled_loss:
+                        scaled_loss.backward()
+                else:
+                    loss.backward()
+                
+                if (batch_idx+1) % config.accumulation_steps == 0:
+                    if config.scale:
+                        scaler.step(optimizer)
+                        scaler.update()
+                    else:
+                        optimizer.step()
+                        optimizer.zero_grad()
+                
+                if scheduler is not None:
+                   scheduler.step()
+                # except AssertionError as e:
+                #     print(e)
 
-            pred, tars, loss, ids, times = evaluate_model(model, val_loader, criterion1, epoch, eval_gt_path, scheduler=scheduler, history=history2, log_name=log_name)
+            ### VALIDATION ####
+
+            pred, tars, loss, ids, times = evaluate_model(model, val_loader, criterion1, epoch, eval_gt_path, scheduler=None, history=history2, log_name=log_name)
             
             if loss < best2:
                 best2 = loss
@@ -328,9 +371,9 @@ def main():
                 with open(log_name, 'a') as f:
                     f.write('\n')
         
-        model = create_model('resnet18', path=f'model1-fld{fold+1}.pth')
+        model = load_model('resnet18', path=f'model1-fld{fold+1}.pth')
         model.cuda()
-        pred, tars, loss, kaggle = evaluate_model(model, val_loader, criterion1, 0, scheduler=scheduler, history=history2, log_name=log_name)
-
+        pred, tars, loss, ids, times = evaluate_model(model, val_loader, criterion1, epoch, eval_gt_path, scheduler=scheduler, history=history2, log_name=log_name)
+        
 if __name__ == '__main__':
     main()

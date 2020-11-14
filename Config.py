@@ -1,6 +1,6 @@
 
 class config:
-    epochs = 30
+    epochs = 15
     batch_size = 4
     # lr = 1e-4
     # lr = 0.1
@@ -28,33 +28,38 @@ cfg = {
     },
 
     'raster_params': {
-        'raster_size': [400, 400],
-        # 'raster_size': [224, 224],
+        # 'raster_size': [400, 400],
+        'raster_size': [224, 224],
         'pixel_size': [0.5, 0.5],
         'ego_center': [0.25, 0.5],
         'map_type': 'py_semantic',
         'satellite_map_key': 'data/aerial_map/aerial_map.png',
         'semantic_map_key': 'data/semantic_map/semantic_map.pb',
         'dataset_meta_key': 'data/meta.json',
-        'filter_agents_threshold': 0.5
+        'filter_agents_threshold': 0.5,
+        'prefetch_factor': 8
     },
 
     'train_data_loader': {
         'key': 'data/train.zarr',
         'batch_size': 64,
         'shuffle': True,
-        'num_workers': 0
+        'num_workers': 4
     },
 
     'val_data_loader': {
         'key': 'data/validate.zarr',
         'batch_size': 64,
         'shuffle': False,
-        'num_workers': 0
+        'num_workers': 4
     },
 
     'train_params': {
         'max_num_steps': 30000,
         'checkpoint_every_n_steps': 1000,
+    },
+
+    'val_params': {
+        'steps': 10000
     }
 }
