@@ -49,9 +49,9 @@ def seed_everything(seed):
     os.environ['PYTHONHASHSEED'] = str(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    # torch.backends.cudnn.deterministic = True
-    # torch.backends.cudnn.benchmark = True
+    # torch.cuda.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = True
 
 def evaluate_model(model, val_loader, criterion1, epoch, eval_gt_path, scheduler, history, log_name=None):
     model.eval()
@@ -238,8 +238,8 @@ def main():
         # train_loader = get_loader(train_dataset, batch_size=config.batch_size, workers=0, shuffle=True, transform=None)
         # val_loader = get_loader(eval_dataset, batch_size=config.batch_size, workers=0, shuffle=False, transform=None, mode='val')
     
-        train_loader = get_loader(None, dm, batch_size=train_cfg['batch_size'], workers=train_cfg['num_workers'], shuffle=train_cfg['shuffle'], transform=None)
-        val_loader = get_loader(None, dm, batch_size=eval_cfg['batch_size'], workers=eval_cfg['num_workers'], shuffle=eval_cfg['shuffle'], transform=None, mode='val')
+        train_loader, train_dataset = get_loader(None, dm, batch_size=train_cfg['batch_size'], workers=train_cfg['num_workers'], shuffle=train_cfg['shuffle'], transform=None)
+        val_loader, val_dataset = get_loader(None, dm, batch_size=eval_cfg['batch_size'], workers=eval_cfg['num_workers'], shuffle=eval_cfg['shuffle'], transform=None, mode='val')
 
         scaler = amp.GradScaler()
 
@@ -270,9 +270,10 @@ def main():
         best2 = 1e10
         n_epochs = config.epochs
         early_epoch = 0
-
+        
         # Scheduler
-        scheduler = get_scheduler(optimizer, train_loader=train_loader, epochs=n_epochs, batch_size=train_cfg['batch_size'])
+        scheduler = get_scheduler(optimizer, train_loader=train_loader, train_dataset=train_dataset, epochs=n_epochs, batch_size=train_cfg['batch_size'])
+        updates_per_epoch = math.ceil(len(train_dataset) / train_cfg['batch_size'])
 
         for epoch in range(n_epochs-early_epoch):
             epoch += early_epoch
@@ -285,6 +286,7 @@ def main():
 
             model.train()
             total_loss = 0
+            global_step = epoch * updates_per_epoch
             
             t = tqdm(train_loader)
             for batch_idx, batch in enumerate(t):
@@ -342,6 +344,7 @@ def main():
                 else:
                     loss.backward()
                 
+                lr_this_step = None
                 if (batch_idx+1) % config.accumulation_steps == 0:
                     if config.scale:
                         scaler.step(optimizer)
@@ -349,6 +352,11 @@ def main():
                     else:
                         optimizer.step()
                         optimizer.zero_grad()
+
+                    # lr_this_step = config.lr * scheduler.get_lr(global_step, 0.03)
+                    # for param_group in optimizer.param_groups:
+                    #     param_group['lr'] = lr_this_step
+                    # global_step += 1
                 
                 if scheduler is not None:
                    scheduler.step()
@@ -373,7 +381,7 @@ def main():
         
         model = load_model('resnet18', path=f'model1-fld{fold+1}.pth')
         model.cuda()
-        pred, tars, loss, ids, times = evaluate_model(model, val_loader, criterion1, epoch, eval_gt_path, scheduler=scheduler, history=history2, log_name=log_name)
+        pred, tars, loss, ids, times = evaluate_model(model, val_loader, criterion1, epoch, eval_gt_path, scheduler=None, history=history2, log_name=log_name)
         
 if __name__ == '__main__':
     main()

@@ -76,7 +76,7 @@ class MyTrainDataset:
         self.has_init = False
     def __len__(self):
         # note you have to figure out the actual length beforehand since once the rasterizer and/or AgentDataset been constructed, you cannot pickle it anymore! So we can't compute the size from the real dataset. However, DataLoader require the len to determine the sampling.
-        return int(22496709 * .01)
+        return int(22496709 * .05)
     def __getitem__(self, index):
         index = random.randint(0, 22496709 - 1)
         return self.dataset[index]
@@ -131,4 +131,4 @@ def get_loader(dataset, dm, batch_size=128, workers=0, shuffle=True, transform=N
       loader = DataLoader(dataset=dataset, batch_size=batch_size, shuffle=shuffle, num_workers=workers,
                             # persistent_workers=True,
                             worker_init_fn=my_dataset_worker_init_func)
-    return loader
+    return loader, dataset

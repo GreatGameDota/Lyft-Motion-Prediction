@@ -162,11 +162,11 @@ class WarmupLinearSchedule(_LRSchedule):
             return progress / self.warmup
         return max((progress - 1.) / (self.warmup - 1.), 0.)
 
-def get_scheduler(optimizer, train_loader=None, epochs=0, batch_size=2):
-    updates_per_epoch = math.ceil(len(train_loader) / batch_size)
+def get_scheduler(optimizer, train_loader=None, train_dataset=None, epochs=0, batch_size=2):
+    updates_per_epoch = math.ceil(len(train_dataset) / batch_size)
     num_updates = int(epochs * updates_per_epoch)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=0.001, steps_per_epoch=len(train_loader), epochs=epochs)
-    # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_mid=1e-5)
+    # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-5)
     # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=3, mode='min', factor=0.75, verbose=True, min_lr=1e-5)
     # scheduler = WarmupCosineSchedule(warmup=0.03, t_total=num_updates)
     return scheduler

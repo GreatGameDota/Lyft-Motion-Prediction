@@ -71,7 +71,7 @@ class FCN(torch.nn.Module):
         # nn.Dropout(0.5),
         # nn.Linear(1024, num_classes),
         nn.Linear(in_f, 4096),
-        # nn.Dropout(0.5),
+        nn.Dropout(0.5),
         nn.Linear(4096, self.num_preds + num_modes),
     )
   
