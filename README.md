@@ -1,6 +1,6 @@
 # Lyft Motion Prediction
 
-My 122nd* place solution to the [Lyft Motion Prediction for Autonomous vehicles](https://www.kaggle.com/c/lyft-motion-prediction-autonomous-vehicles) competition hosted on Kaggle by Lyft.
+My 121st place solution to the [Lyft Motion Prediction for Autonomous vehicles](https://www.kaggle.com/c/lyft-motion-prediction-autonomous-vehicles) competition hosted on Kaggle by Lyft.
 
 ## Initial Thoughts
 
